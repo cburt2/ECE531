@@ -1,0 +1,122 @@
+#include <stdio.h>
+#include <sys/types.h>
+#include <signal.h>
+#include <syslog.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <stdlib.h>	
+#include <errno.h>
+
+
+#define DAEMON_NAME "sampled"
+#define OK		0
+//#define ERROR_FORMAT 	"Format Error"
+#define ERR_FORK	1 
+#define ERR_SETSID	2
+#define ERR_CHDIR	3
+#define ERR_WTF		4
+
+#define true		1
+
+char *ERROR_FORMAT = "Format Error!";
+
+// There may be more code to add here see IoT_4_1_3_
+
+// This is a signal handler. Signal is the signal passed to 
+// us to handle.
+static void _signal_handler(const int signal) {
+	switch(signal) {
+	case SIGHUP:
+		break;
+	case SIGTERM:
+		syslog(LOG_INFO, "received SIGTERM, exiting.");
+		closelog();
+		exit(OK);
+		break;
+	default:
+		syslog(LOG_INFO, "received unhanlded signal");
+	}
+}
+
+
+// This is where we do the work of the daemon. This example
+// just counts and sleeps. Impressive!
+static void _do_work(void) {
+	for(int i = 0; true; i++) {
+		syslog(LOG_INFO, "iteration: %d", i);
+		sleep(1);
+	}
+}
+
+int main(void) {
+	// Open syslog. We want to write directly to the log with
+	// no wait, and we want to include the PID of the daemon process.
+	// We are running a daemon, so set the LOG_DAEMON flag too.
+	//
+	// Why open here? Well, if we have an error forking, we want to
+	// register the error to syslog. To do that, we need an open log.
+	// The child process wil inherit this log, as we don't close it
+	// in the parent when it exits, this opening here is A+.
+	openlog(DAEMON_NAME, LOG_PID | LOG_NDELAY | LOG_NOWAIT, LOG_DAEMON);
+	syslog(LOG_INFO, "starting sampled");
+
+	// We really don't want to take over syslogd or initd, so
+	// fork.
+	pid_t pid = fork();
+
+	// Well something went wrong. fortk() uses standard unix
+	// errno functionality, so let's log the problem and exit.
+	if(pid < 0) {
+		syslog(LOG_ERR, ERROR_FORMAT, strerror(errno));
+		return ERR_FORK;
+	}
+
+	// We reciece a PID if we're the parent process. If we're then
+	// parent, let's jsut exit. We only care about the forked child.
+	if(pid > 0) {
+		return OK;
+	}
+
+	// I'd like the eader like to be the leader of the session. If I can't
+	// I'm out.
+	if(setsid() < -1) {
+		syslog(LOG_ERR, ERROR_FORMAT, strerror(errno));
+		return ERR_SETSID;
+	}
+
+	// We have no console to write to anymore, so these file pointers
+	// are just silly. Close them.
+	close(STDIN_FILENO);
+	close(STDOUT_FILENO);
+	close(STDERR_FILENO);
+
+	// Are we creating files? Well, not in this example, but let's
+	// go ahead and set a sane UMASK anyway. This will give us
+	// read/write, and everybode else gets read permissions
+	umask(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+	// What's our working directory going to be? Let's make it the root
+	// directory just to make navigation easrier if we needed it
+	if(chdir("/") < 0) {
+		syslog(LOG_ERR, ERROR_FORMAT, strerror(errno));
+		return ERR_CHDIR;
+	}
+
+	// Now, we can only be controlled by signals as we have no interactive
+	// user session. So let's handle those singals, yeah?
+	signal(SIGTERM, _signal_handler);
+	signal(SIGHUP, _signal_handler);
+
+	// This is the daemon process runloop. This could be a while statement,
+	// or some other construct, but daemons have specific responsibilities
+	// they eed to handle, usually in a repeated way, and all that log
+	// would go here.
+	_do_work();
+
+	// This should actually never be reached. We should be looping in
+	// _do_work() until the daemon is killed by a signal, at which
+	// point we exit the process
+	return ERR_WTF;
+}
+	
